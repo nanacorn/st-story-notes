@@ -1,0 +1,11 @@
+{
+    "display_name": "Story Notes (이야기 노트)",
+    "loading_order": 60,
+    "requires": [],
+    "optional": [],
+    "js": "index.js",
+    "css": "style.css",
+    "author": "nanacorn",
+    "version": "1.0.0",
+    "homePage": "https://github.com/nanacorn/st-story-notes"
+}

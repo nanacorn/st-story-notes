@@ -1,0 +1,111 @@
+.sn-settings .sn-status {
+    padding: 8px 10px;
+    margin: 4px 0 8px;
+    border-radius: 8px;
+    border: 1px solid var(--SmartThemeBorderColor);
+    font-size: 0.92em;
+    line-height: 1.6;
+}
+
+.sn-settings .sn-buttons {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin: 6px 0;
+}
+
+.sn-settings .sn-buttons .menu_button {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    width: auto;
+    white-space: nowrap;
+    margin: 0;
+}
+
+.sn-settings .sn-h {
+    margin: 14px 0 4px;
+    padding-top: 8px;
+    border-top: 1px solid var(--SmartThemeBorderColor);
+    font-size: 0.95em;
+    opacity: 0.85;
+}
+
+.sn-settings .sn-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 5px 0;
+}
+
+.sn-settings .sn-row label {
+    flex: 1;
+}
+
+.sn-settings .sn-row input {
+    width: 80px;
+    margin: 0;
+}
+
+.sn-settings .sn-row select {
+    width: 130px;
+    margin: 0;
+}
+
+.sn-settings .sn-topics {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 2px 10px;
+}
+
+.sn-settings .sn-danger-zone {
+    margin-top: 14px;
+    opacity: 0.85;
+}
+
+.sn-book {
+    text-align: left;
+}
+
+.sn-book-title {
+    margin: 0 0 10px;
+}
+
+.sn-book-title i {
+    color: #8fb8e0;
+    margin-right: 4px;
+}
+
+.sn-empty {
+    opacity: 0.7;
+}
+
+.sn-note {
+    margin: 0 0 12px;
+    padding: 8px 10px;
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 10px;
+}
+
+.sn-note-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 6px;
+}
+
+.sn-range {
+    font-weight: 700;
+    opacity: 0.85;
+}
+
+.sn-note-head .sn-del {
+    margin: 0;
+    width: auto;
+}
+
+.sn-text {
+    width: 100%;
+    margin: 0;
+    resize: vertical;
+}
