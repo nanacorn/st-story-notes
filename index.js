@@ -18,6 +18,8 @@ import {
 import { hideChatMessageRange } from '../../../chats.js';
 import { getTokenCountAsync } from '../../../tokenizers.js';
 import { callGenericPopup, POPUP_TYPE } from '../../../popup.js';
+import { ConnectionManagerRequestService } from '../../shared.js';
+import { oai_settings } from '../../../openai.js';
 
 const ID = 'story_notes';
 const LOG = '[Story Notes]';
@@ -47,6 +49,8 @@ const DEFAULTS = {
     depth: 21,        // 남겨 둔 최근 메시지 20개 바로 위
     lang: 'ko',
     prevAll: true,    // 새 노트를 쓸 때 앞 노트를 전부 참고
+    profile: '',      // 정리에 쓸 연결 프로필 id ('' = 지금 채팅에 연결된 API)
+    replyTokens: 8192, // 정리 답의 최대 길이 (생각하는 모델은 생각에도 이 몫을 씀)
     topics: Object.fromEntries(TOPICS.map(t => [t.key, t.on])),
 };
 
@@ -179,13 +183,50 @@ function buildRequest(from, to) {
     return { system, user, empty: lines.length === 0 };
 }
 
+/** 고른 연결 프로필 (없거나 지워졌으면 null = 지금 연결) */
+function chosenProfile() {
+    const id = cfg().profile;
+    if (!id) return null;
+    try {
+        return ConnectionManagerRequestService.getSupportedProfiles().find(p => p.id === id) ?? null;
+    } catch {
+        return null;
+    }
+}
+
+/** 정리 요청. 프로필을 골랐으면 그 연결로, 아니면 지금 채팅 연결로 보낸다. */
+async function askAI(system, user) {
+    const s = cfg();
+    if (s.profile && !chosenProfile()) {
+        toastr.warning('정리에 쓸 연결 프로필을 찾을 수 없어서 지금 연결로 정리해요.', '이야기 노트');
+    }
+    const profile = chosenProfile();
+    if (!profile) {
+        return await generateRaw({ prompt: user, systemPrompt: system });
+    }
+    // Vertex 인증 방식·프로젝트는 프로필에 저장되지 않으므로 지금 설정에서 가져온다.
+    const extra = profile.api === 'vertexai' ? {
+        vertexai_auth_mode: oai_settings.vertexai_auth_mode,
+        vertexai_express_project_id: oai_settings.vertexai_express_project_id,
+    } : {};
+    const messages = [
+        { role: 'system', content: system },
+        { role: 'user', content: user },
+    ];
+    const res = await ConnectionManagerRequestService.sendRequest(
+        profile.id, messages, Number(s.replyTokens) || DEFAULTS.replyTokens,
+        { stream: false, extractData: true, includePreset: true }, extra,
+    );
+    return typeof res === 'string' ? res : (res?.content ?? '');
+}
+
 async function writeNote(from, to) {
     const { system, user, empty } = buildRequest(from, to);
     if (empty) {
         book().notes.push({ from, to, text: '(내용 없음)' });
         return true;
     }
-    const out = await generateRaw({ prompt: user, systemPrompt: system });
+    const out = await askAI(system, user);
     const text = cleanText(out);
     if (!text) throw new Error('AI가 빈 답을 보냈어요.');
     book().notes.push({ from, to, text });
@@ -326,6 +367,11 @@ function addSettings() {
                     <div class="sn-row"><label for="sn_keep">정리 안 하고 남길 최근 메시지</label><input id="sn_keep" class="text_pole" type="number" min="0" max="200"></div>
                     <label class="checkbox_label"><input type="checkbox" id="sn_hide"> <span>정리가 끝난 메시지는 AI에게 안 보내기(숨김)</span></label>
 
+                    <h4 class="sn-h">어떤 AI로 정리할까</h4>
+                    <div class="sn-row"><label for="sn_profile">정리에 쓸 연결</label>
+                        <select id="sn_profile" class="text_pole"></select></div>
+                    <small class="sn-hint">채팅과 다른 모델로 정리할 수 있어요. 고를 수 있는 건 연결 프로필에 저장해 둔 연결이에요.</small>
+
                     <h4 class="sn-h">무엇을 적을까</h4>
                     <div class="sn-topics">${topicBoxes}</div>
                     <div class="sn-row"><label for="sn_lang">노트 언어</label>
@@ -372,6 +418,24 @@ function addSettings() {
     bindNum('#sn_depth', 'depth');
     bindSel('#sn_lang', 'lang');
     bindSel('#sn_where', 'where');
+    const fillProfiles = () => {
+        const sel = box.find('#sn_profile').empty();
+        sel.append($('<option value=""></option>').text('지금 채팅에 연결된 API'));
+        let list = [];
+        try { list = ConnectionManagerRequestService.getSupportedProfiles(); } catch { /* 연결 관리자 꺼짐 */ }
+        for (const p of list) sel.append($('<option></option>').val(p.id).text(p.name));
+        const cur = cfg().profile;
+        if (cur && !list.some(p => p.id === cur)) {
+            sel.append($('<option></option>').val(cur).text('(지워진 프로필 — 지금 연결로 정리)'));
+        }
+        sel.val(cur);
+    };
+    fillProfiles();
+    // 설정을 펼칠 때 목록을 새로 채운다 (드롭다운을 여는 순간 비우면 모바일에서 닫혀 버림)
+    box.find('.inline-drawer-toggle').on('click', fillProfiles);
+    box.find('#sn_profile').on('change', function () {
+        cfg().profile = String($(this).val()); changed();
+    });
     box.find('[data-topic]').each(function () {
         const key = this.dataset.topic;
         $(this).prop('checked', !!s.topics[key]).on('change', function () {
@@ -383,7 +447,9 @@ function addSettings() {
     box.find('#sn_open').on('click', openNotebook);
     box.find('#sn_reset').on('click', resetAll);
     box.find('#sn_defaults').on('click', () => {
+        const keepProfile = cfg().profile;
         extension_settings[ID] = structuredClone(DEFAULTS);
+        extension_settings[ID].profile = keepProfile;
         const d = cfg();
         box.find('#sn_auto').prop('checked', d.auto);
         box.find('#sn_hide').prop('checked', d.hideDone);
