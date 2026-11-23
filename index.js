@@ -14,12 +14,17 @@ import {
     extension_prompt_types,
     extension_prompt_roles,
     generateRaw,
+    main_api,
 } from '../../../../script.js';
 import { hideChatMessageRange } from '../../../chats.js';
 import { getTokenCountAsync } from '../../../tokenizers.js';
 import { callGenericPopup, POPUP_TYPE } from '../../../popup.js';
 import { ConnectionManagerRequestService } from '../../shared.js';
-import { oai_settings } from '../../../openai.js';
+// 실리태번 버전마다 있는 함수가 달라서, 없으면 '지금 채팅 모델'로 정리하도록 통째로 가져온다.
+import * as openai from '../../../openai.js';
+import * as customRequest from '../../../custom-request.js';
+
+const oai_settings = openai.oai_settings;
 
 const ID = 'story_notes';
 const LOG = '[Story Notes]';
@@ -50,6 +55,7 @@ const DEFAULTS = {
     lang: 'ko',
     prevAll: true,    // 새 노트를 쓸 때 앞 노트를 전부 참고
     profile: '',      // 정리에 쓸 연결 프로필 id ('' = 지금 채팅에 연결된 API)
+    models: {},       // 연결 종류(채팅 완성 근원)마다 정리에 쓸 모델 ('' = 지금 채팅 모델)
     replyTokens: 8192, // 정리 답의 최대 길이 (생각하는 모델은 생각에도 이 몫을 씀)
     topics: Object.fromEntries(TOPICS.map(t => [t.key, t.on])),
 };
@@ -194,7 +200,78 @@ function chosenProfile() {
     }
 }
 
-/** 정리 요청. 프로필을 골랐으면 그 연결로, 아니면 지금 채팅 연결로 보낸다. */
+// ───────── 정리에 쓸 모델 ─────────
+
+// 요약은 빠르고 싼 모델로 충분하다. 구글 연결(AI 스튜디오·Vertex·Flex)에서 맨 위에 추천으로 보여 준다.
+const RECOMMENDED = 'gemini-3.8-flash';
+
+/** 지금 채팅이 쓰는 연결 종류(채팅 완성 근원). 채팅 완성이 아니면 '' */
+function currentSource() {
+    if (main_api !== 'openai') return '';
+    return String(oai_settings?.chat_completion_source || '');
+}
+
+/** 연결 종류 이름 (화면에 보이는 이름 그대로) */
+function sourceLabel(src) {
+    const text = $(`#chat_completion_source option[value="${src}"]`).first().text().trim();
+    return text || src;
+}
+
+/** 연결 종류별 실리태번 모델 목록 칸 */
+function modelSelectOf(src) {
+    if (src === 'makersuite') return document.getElementById('model_google_select');
+    return document.getElementById(`model_${src}_select`);
+}
+
+/** 구글 모델을 쓰는 연결인지 (추천 모델을 보여 줄지) */
+function isGoogleSource(src) {
+    if (src === 'makersuite' || src === 'vertexai') return true;
+    return src === 'custom' && /googleapis\.com/.test(String(oai_settings?.custom_url || ''));
+}
+
+/** 지금 연결에서 고를 수 있는 모델 이름들 (모델 추가 확장으로 넣은 모델 포함) */
+function modelsOf(src) {
+    const select = modelSelectOf(src);
+    const names = [];
+    if (select instanceof HTMLSelectElement) {
+        for (const o of select.options) {
+            const v = String(o.value || '').trim();
+            if (v && !names.includes(v)) names.push(v);
+        }
+    }
+    return names;
+}
+
+/** 지금 연결에서 정리에 쓸 모델 ('' = 지금 채팅 모델 그대로) */
+function chosenModel() {
+    const src = currentSource();
+    return src ? String(cfg().models?.[src] || '') : '';
+}
+
+/** 지금 연결 설정(키·중계기·Vertex 지역·추가 파라미터)은 그대로 두고 모델만 바꿔 보낸다. */
+async function askWithModel(model, system, user) {
+    const build = openai.createGenerationParameters;
+    const Service = customRequest.ChatCompletionService;
+    if (typeof build !== 'function' || typeof Service?.sendRequest !== 'function') {
+        toastr.warning('이 실리태번 버전에서는 모델을 따로 고를 수 없어서 지금 채팅 모델로 정리해요.', '이야기 노트');
+        return await generateRaw({ prompt: user, systemPrompt: system });
+    }
+    const messages = [
+        { role: 'system', content: system },
+        { role: 'user', content: user },
+    ];
+    const settings = structuredClone(oai_settings);
+    const { generate_data: data } = await build(settings, model, 'quiet', messages);
+    data.stream = false;
+    delete data.n;
+    const cap = Number(cfg().replyTokens) || DEFAULTS.replyTokens;
+    if ('max_completion_tokens' in data) data.max_completion_tokens = cap;
+    else data.max_tokens = cap;
+    const res = await Service.sendRequest(data, true);
+    return typeof res === 'string' ? res : (res?.content ?? '');
+}
+
+/** 정리 요청. 프로필 → 고른 모델 → 지금 채팅 연결 순서로 정한다. */
 async function askAI(system, user) {
     const s = cfg();
     if (s.profile && !chosenProfile()) {
@@ -202,6 +279,8 @@ async function askAI(system, user) {
     }
     const profile = chosenProfile();
     if (!profile) {
+        const model = chosenModel();
+        if (model) return await askWithModel(model, system, user);
         return await generateRaw({ prompt: user, systemPrompt: system });
     }
     // Vertex 인증 방식·프로젝트는 프로필에 저장되지 않으므로 지금 설정에서 가져온다.
@@ -368,9 +447,11 @@ function addSettings() {
                     <label class="checkbox_label"><input type="checkbox" id="sn_hide"> <span>정리가 끝난 메시지는 AI에게 안 보내기(숨김)</span></label>
 
                     <h4 class="sn-h">어떤 AI로 정리할까</h4>
-                    <div class="sn-row"><label for="sn_profile">정리에 쓸 연결</label>
+                    <div class="sn-row sn-stack"><label for="sn_profile">정리에 쓸 모델</label>
                         <select id="sn_profile" class="text_pole"></select></div>
-                    <small class="sn-hint">채팅과 다른 모델로 정리할 수 있어요. 고를 수 있는 건 연결 프로필에 저장해 둔 연결이에요.</small>
+                    <div class="sn-row sn-stack" id="sn_type_row" style="display:none"><label for="sn_type">모델 이름</label>
+                        <input id="sn_type" class="text_pole" type="text" placeholder="예: ${RECOMMENDED}"></div>
+                    <small class="sn-hint" id="sn_model_hint"></small>
 
                     <h4 class="sn-h">무엇을 적을까</h4>
                     <div class="sn-topics">${topicBoxes}</div>
@@ -418,23 +499,76 @@ function addSettings() {
     bindNum('#sn_depth', 'depth');
     bindSel('#sn_lang', 'lang');
     bindSel('#sn_where', 'where');
+    // 값: '' = 지금 채팅 모델 / 'm:모델' = 지금 연결로 모델만 바꿈 / 'p:id' = 연결 프로필 / 'type' = 직접 입력
+    let typing = false;
     const fillProfiles = () => {
+        const c = cfg();
+        const src = currentSource();
         const sel = box.find('#sn_profile').empty();
-        sel.append($('<option value=""></option>').text('지금 채팅에 연결된 API'));
+        sel.append($('<option value=""></option>').text('지금 채팅 모델 그대로'));
+
+        const model = chosenModel();
+        if (src) {
+            const group = $('<optgroup></optgroup>').attr('label', `지금 연결(${sourceLabel(src)})의 모델`);
+            let names = modelsOf(src);
+            if (isGoogleSource(src)) {
+                // 목록에 없어도(모델 추가 확장을 안 깔았어도) 추천 모델은 맨 위에 보여 준다.
+                const rec = names.find(n => n.replace(/^models\//, '') === RECOMMENDED) || RECOMMENDED;
+                group.append($('<option></option>').val(`m:${rec}`).text(`★ ${rec} (추천)`));
+                names = names.filter(n => n !== rec);
+            }
+            for (const n of names) group.append($('<option></option>').val(`m:${n}`).text(n));
+            if (model && !group.find('option').toArray().some(o => o.value === `m:${model}`)) {
+                group.append($('<option></option>').val(`m:${model}`).text(model));
+            }
+            group.append($('<option value="type"></option>').text('직접 입력…'));
+            sel.append(group);
+        }
+
         let list = [];
         try { list = ConnectionManagerRequestService.getSupportedProfiles(); } catch { /* 연결 관리자 꺼짐 */ }
-        for (const p of list) sel.append($('<option></option>').val(p.id).text(p.name));
-        const cur = cfg().profile;
-        if (cur && !list.some(p => p.id === cur)) {
-            sel.append($('<option></option>').val(cur).text('(지워진 프로필 — 지금 연결로 정리)'));
+        const pg = $('<optgroup label="저장한 연결 프로필 (연결까지 바꿀 때)"></optgroup>');
+        for (const p of list) pg.append($('<option></option>').val(`p:${p.id}`).text(p.name));
+        if (c.profile && !list.some(p => p.id === c.profile)) {
+            pg.append($('<option></option>').val(`p:${c.profile}`).text('(지워진 프로필 — 지금 연결로 정리)'));
         }
-        sel.val(cur);
+        if (pg.children().length) sel.append(pg);
+
+        const value = c.profile ? `p:${c.profile}` : (typing ? 'type' : (model ? `m:${model}` : ''));
+        sel.val(value);
+        box.find('#sn_type_row').toggle(value === 'type');
+        box.find('#sn_model_hint').text(src
+            ? `채팅은 그대로 두고 정리만 다른 모델로 해요. 키·중계기 같은 연결 설정은 지금 연결(${sourceLabel(src)}) 것을 그대로 써요.`
+            : '지금은 채팅 완성(Chat Completion) 연결이 아니라서 지금 채팅 모델로 정리해요. 프로필은 고를 수 있어요.');
     };
     fillProfiles();
-    // 설정을 펼칠 때 목록을 새로 채운다 (드롭다운을 여는 순간 비우면 모바일에서 닫혀 버림)
+    // 설정을 펼칠 때·연결이 바뀔 때 목록을 새로 채운다 (드롭다운을 여는 순간 비우면 모바일에서 닫혀 버림)
     box.find('.inline-drawer-toggle').on('click', fillProfiles);
+    for (const ev of ['CHATCOMPLETION_SOURCE_CHANGED', 'MAIN_API_CHANGED', 'CONNECTION_PROFILE_LOADED', 'ONLINE_STATUS_CHANGED']) {
+        if (event_types[ev]) eventSource.on(event_types[ev], () => { typing = false; fillProfiles(); });
+    }
     box.find('#sn_profile').on('change', function () {
-        cfg().profile = String($(this).val()); changed();
+        const v = String($(this).val());
+        const c = cfg();
+        const src = currentSource();
+        typing = v === 'type';
+        if (v.startsWith('p:')) {
+            c.profile = v.slice(2);
+        } else {
+            c.profile = '';
+            if (src) c.models[src] = v.startsWith('m:') ? v.slice(2) : '';
+        }
+        if (typing) box.find('#sn_type').val(src ? (c.models[src] || '') : '');
+        box.find('#sn_type_row').toggle(typing);
+        changed();
+    });
+    box.find('#sn_type').on('change', function () {
+        const src = currentSource();
+        if (!src) return;
+        cfg().models[src] = String($(this).val()).trim();
+        typing = false;
+        changed();
+        fillProfiles();
     });
     box.find('[data-topic]').each(function () {
         const key = this.dataset.topic;
@@ -448,8 +582,10 @@ function addSettings() {
     box.find('#sn_reset').on('click', resetAll);
     box.find('#sn_defaults').on('click', () => {
         const keepProfile = cfg().profile;
+        const keepModels = cfg().models;
         extension_settings[ID] = structuredClone(DEFAULTS);
         extension_settings[ID].profile = keepProfile;
+        extension_settings[ID].models = keepModels;
         const d = cfg();
         box.find('#sn_auto').prop('checked', d.auto);
         box.find('#sn_hide').prop('checked', d.hideDone);

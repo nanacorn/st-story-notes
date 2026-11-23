@@ -109,3 +109,15 @@
     margin: 0;
     resize: vertical;
 }
+
+/* 정리에 쓸 모델: 모델 이름이 길어서 이름표 아래 한 줄을 통째로 쓴다 */
+.sn-settings .sn-row.sn-stack {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 3px;
+}
+
+.sn-settings .sn-row.sn-stack select,
+.sn-settings .sn-row.sn-stack input {
+    width: 100%;
+}
